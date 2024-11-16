@@ -24,8 +24,8 @@ static std::string GenerateRandomString(size_t length) {
 
 // Implementation of InitiateOAuthFlow
 std::string CreateDuckMailSecretFunctions::InitiateOAuthFlow() {
-    const std::string client_id = "YOUR_CLIENT_ID.apps.googleusercontent.com"; // Replace with your client ID
-    const std::string redirect_uri = "https://duckmail-auth.com/oauth";        // Replace with your redirect URI
+    const std::string client_id = "721513172144-9lq10nn1t56maniaog5kbkm3upinhbu4.apps.googleusercontent.com"; // Replace with your client ID
+    const std::string redirect_uri = "https://dtenwolde.github.io/duckmail-auth/";
     const std::string auth_url = "https://accounts.google.com/o/oauth2/v2/auth";
     const std::string scope = "https://www.googleapis.com/auth/gmail.readonly";
 

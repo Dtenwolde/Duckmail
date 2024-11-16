@@ -10,6 +10,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 
 // OpenSSL linked through vcpkg
+#include <duckmail_auth.hpp>
 #include <openssl/opensslv.h>
 #include <curl/curl.h>
 #include <yyjson.hpp>
@@ -34,20 +35,6 @@ inline void DuckmailOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
                                                      ", my linked OpenSSL version is " +
                                                      OPENSSL_VERSION_TEXT );;
         });
-}
-
-	// Define a custom deserializer for the IMAP secret
-static unique_ptr<BaseSecret> IMAPSecretDeserializer(Deserializer &deserializer, BaseSecret base_secret) {
-    auto secret = make_uniq<KeyValueSecret>(base_secret);
-    Value secret_map_value;
-    deserializer.ReadProperty(201, "secret_map", secret_map_value);
-
-    for (const auto &entry : ListValue::GetChildren(secret_map_value)) {
-        auto kv_struct = StructValue::GetChildren(entry);
-        secret->secret_map[kv_struct[0].ToString()] = kv_struct[1];
-    }
-
-    return secret;
 }
 
 // // Define the secret creation function
@@ -106,17 +93,7 @@ static void LoadInternal(DatabaseInstance &instance) {
     auto duckmail_openssl_version_scalar_function = ScalarFunction("duckmail_openssl_version", {LogicalType::VARCHAR},
                                                 LogicalType::VARCHAR, DuckmailOpenSSLVersionScalarFun);
     ExtensionUtil::RegisterFunction(instance, duckmail_openssl_version_scalar_function);
-
-    // // Register the IMAP secret type
-    // RegisterIMAPSecret(instance);
-    //
-    // TableFunction imap_table_function(
-    //     "imap_emails",
-    //     {LogicalType::VARCHAR}, // Input: Secret name
-    //     IMAPTableFunction,      // Main function
-    //     IMAPTableFunctionBind   // Bind function
-    // );
-    // ExtensionUtil::RegisterFunction(instance, imap_table_function);
+		CreateDuckMailSecretFunctions::Register(instance);
 }
 
 void DuckmailExtension::Load(DuckDB &db) {

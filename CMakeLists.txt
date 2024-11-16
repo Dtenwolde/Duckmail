@@ -15,8 +15,10 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 project(${TARGET_NAME})
 include_directories(src/include)
 
-set(EXTENSION_SOURCES src/duckmail_extension.cpp
-    src/duckmail_auth.cpp)
+set(EXTENSION_SOURCES
+    src/duckmail_extension.cpp
+    src/duckmail_auth.cpp
+    src/duckmail_fetch.cpp)
 
 # Build static and loadable extensions
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

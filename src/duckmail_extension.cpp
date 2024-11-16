@@ -13,7 +13,7 @@
 #include <duckmail_auth.hpp>
 #include <openssl/opensslv.h>
 #include <curl/curl.h>
-#include <yyjson.hpp>
+#include <duckmail_fetch.hpp>
 
 namespace duckdb {
 
@@ -37,53 +37,6 @@ inline void DuckmailOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
         });
 }
 
-// // Define the secret creation function
-// static unique_ptr<BaseSecret> CreateIMAPSecret(ClientContext &context, CreateSecretInput &input) {
-//     // Check required parameters
-//     if (!input.options.count("username") || !input.options.count("password") || !input.options.count("server")) {
-//         throw InvalidInputException("IMAP Secret requires 'username', 'password', and 'server' parameters.");
-//     }
-//
-//     auto secret = make_uniq<KeyValueSecret>(
-//         input.scope, input.type, input.provider, input.name.empty() ? "imap_secret" : input.name);
-//
-//     // Set the values in the secret map
-//     secret->TrySetValue("username", input);
-//     secret->TrySetValue("password", input);
-//     secret->TrySetValue("server", input);
-//
-//     // Redact sensitive keys
-//     secret->redact_keys.insert("password");
-//
-//     return secret;
-// }
-
-// // Register the IMAP secret type
-// static void RegisterIMAPSecret(DatabaseInstance &instance) {
-//     auto &secret_manager = SecretManager::Get(instance);
-//
-//     // Register the secret type
-//     SecretType imap_secret_type;
-//     imap_secret_type.name = "imap";
-//     imap_secret_type.deserializer = IMAPSecretDeserializer;
-//     imap_secret_type.default_provider = "user_provided";
-//
-//     secret_manager.RegisterSecretType(imap_secret_type);
-//
-//     // Add a CreateSecretFunction for the IMAP type
-//     CreateSecretFunction imap_create_function;
-//     imap_create_function.secret_type = "imap";
-//     imap_create_function.provider = "user_provided";
-//     imap_create_function.function = CreateIMAPSecret;
-//
-//     // Define the expected parameters
-//     imap_create_function.named_parameters["username"] = LogicalType::VARCHAR;
-//     imap_create_function.named_parameters["password"] = LogicalType::VARCHAR;
-//     imap_create_function.named_parameters["server"] = LogicalType::VARCHAR;
-//
-//     secret_manager.RegisterSecretFunction(imap_create_function, OnCreateConflict::ERROR_ON_CONFLICT);
-// }
-
 static void LoadInternal(DatabaseInstance &instance) {
     // Register a scalar function
     auto duckmail_scalar_function = ScalarFunction("duckmail", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckmailScalarFun);
@@ -94,6 +47,7 @@ static void LoadInternal(DatabaseInstance &instance) {
                                                 LogicalType::VARCHAR, DuckmailOpenSSLVersionScalarFun);
     ExtensionUtil::RegisterFunction(instance, duckmail_openssl_version_scalar_function);
 		CreateDuckMailSecretFunctions::Register(instance);
+		DuckMailFetchFunction::Register(instance);
 }
 
 void DuckmailExtension::Load(DuckDB &db) {

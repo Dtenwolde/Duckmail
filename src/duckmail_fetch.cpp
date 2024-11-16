@@ -5,11 +5,44 @@
 #include <curl/curl.h>
 #include <string>
 #include <vector>
+#include <duckdb/main/extension_util.hpp>
+#include <json.hpp>
+#include <iostream> // For debugging
 
 namespace duckdb {
 
+using json = nlohmann::json;
+
+// Function to parse the Gmail API response
+std::vector<std::pair<std::string, std::string>> ParseGmailResponse(const std::string &response) {
+    std::vector<std::pair<std::string, std::string>> emails;
+
+    try {
+        std::cout << "Parsing Gmail API response..." << std::endl; // Debugging
+
+        auto parsed_json = json::parse(response);
+        if (parsed_json.contains("messages") && parsed_json["messages"].is_array()) {
+            for (const auto &message : parsed_json["messages"]) {
+                std::string id = message.value("id", "");
+                std::string snippet = message.value("snippet", "");
+                emails.emplace_back(id, snippet);
+            }
+        } else {
+            throw std::runtime_error("Invalid Gmail API response: 'messages' field missing or not an array.");
+        }
+    } catch (const json::exception &e) {
+        std::cerr << "JSON parsing error: " << e.what() << std::endl;
+        throw std::runtime_error("Failed to parse Gmail API response.");
+    }
+
+    std::cout << "Parsed " << emails.size() << " emails from the response." << std::endl; // Debugging
+    return emails;
+}
+
 // Helper function to send an HTTP GET request using cURL
 static std::string SendGetRequest(const std::string &url, const std::string &token) {
+    std::cout << "Sending GET request to URL: " << url << std::endl; // Debugging
+
     CURL *curl = curl_easy_init();
     if (!curl) {
         throw IOException("Failed to initialize cURL.");
@@ -27,80 +60,94 @@ static std::string SendGetRequest(const std::string &url, const std::string &tok
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
+        std::cerr << "cURL error: " << curl_easy_strerror(res) << std::endl; // Debugging
         curl_easy_cleanup(curl);
         throw IOException("cURL error: " + std::string(curl_easy_strerror(res)));
     }
 
     curl_easy_cleanup(curl);
+    std::cout << "Received response from Gmail API." << std::endl; // Debugging
     return response;
 }
 
-// Function to fetch emails using the Gmail API
 static std::vector<std::pair<std::string, std::string>> FetchEmails(const std::string &token) {
     const std::string api_url = "https://www.googleapis.com/gmail/v1/users/me/messages";
+    std::cout << "Fetching emails using the Gmail API..." << std::endl; // Debugging
+
     std::string response = SendGetRequest(api_url, token);
-
-    // For simplicity, just extract message IDs and snippets (adjust as needed)
-    std::vector<std::pair<std::string, std::string>> emails;
-
-    // Parse response (use yyjson for JSON parsing)
-    yyjson_doc *doc = yyjson_read(response.c_str(), response.size(), YYJSON_READ_NOFLAG);
-    if (!doc) {
-        throw IOException("Failed to parse JSON response.");
-    }
-
-    yyjson_val *root = yyjson_doc_get_root(doc);
-    yyjson_val *messages = yyjson_obj_get(root, "messages");
-    if (!yyjson_is_arr(messages)) {
-        yyjson_doc_free(doc);
-        throw IOException("Invalid Gmail API response format: 'messages' not found.");
-    }
-
-    size_t idx, max;
-    yyjson_val *message;
-    yyjson_arr_foreach(messages, idx, max, message) {
-        yyjson_val *id = yyjson_obj_get(message, "id");
-        yyjson_val *snippet = yyjson_obj_get(message, "snippet");
-        if (id && yyjson_is_str(id)) {
-            emails.emplace_back(yyjson_get_str(id), snippet ? yyjson_get_str(snippet) : "");
-        }
-    }
-
-    yyjson_doc_free(doc);
-    return emails;
+    return ParseGmailResponse(response);
 }
 
-// DuckDB table function to fetch emails
-static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-    // Retrieve the token from the secret
-    auto secret = SecretManager::Get(context).LookupSecret(CatalogTransaction::GetSystemCatalogTransaction(context),
-                                                           "/duckmail", "duckmail");
-    auto token_value = secret.GetSecret().TryGetValue("token", true);
+struct DuckMailBindData : public FunctionData {
+    std::string token;
 
-    if (!token_value || !token_value->IsValid()) {
-        throw IOException("Token not found or invalid.");
+    explicit DuckMailBindData(std::string token_p) : token(std::move(token_p)) {}
+    unique_ptr<FunctionData> Copy() const override { return make_uniq<DuckMailBindData>(token); }
+    bool Equals(const FunctionData &other) const override {
+        auto &other_data = (const DuckMailBindData &)other;
+        return token == other_data.token;
+    }
+};
+
+unique_ptr<FunctionData> DuckMailBind(ClientContext &context, TableFunctionBindInput &input,
+                                      vector<LogicalType> &return_types, vector<string> &names) {
+    std::cout << "Binding function 'duckmail_fetch'..." << std::endl; // Debugging
+
+    auto &secret_manager = SecretManager::Get(context);
+    auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+    auto secret_match = secret_manager.LookupSecret(transaction, "duckmail", "duckmail");
+
+    if (!secret_match.HasMatch()) {
+        throw InvalidInputException("No 'duckmail' secret found. Please create a secret with 'CREATE SECRET' first.");
     }
 
-    std::string token = token_value->ToString();
+    auto &secret = secret_match.GetSecret();
+    if (secret.GetType() != "duckmail") {
+        throw InvalidInputException("Invalid secret type. Expected 'duckmail', got '%s'", secret.GetType());
+    }
 
-    // Fetch emails
-    auto emails = FetchEmails(token);
+    const auto *kv_secret = dynamic_cast<const KeyValueSecret *>(&secret);
+    if (!kv_secret) {
+        throw InvalidInputException("Invalid secret format for 'duckmail' secret.");
+    }
 
-    // Populate the output chunk
+    Value token_value;
+    if (!kv_secret->TryGetValue("token", token_value)) {
+        throw InvalidInputException("'token' not found in 'duckmail' secret.");
+    }
+
+    std::string token = token_value.ToString();
+    std::cout << "Retrieved token for Gmail API." << std::endl; // Debugging
+
+    // Set output schema
+    return_types.emplace_back(LogicalType::VARCHAR); // Message ID
+    names.emplace_back("message_id");
+
+    return_types.emplace_back(LogicalType::VARCHAR); // Snippet
+    names.emplace_back("snippet");
+
+    return make_uniq<DuckMailBindData>(token);
+}
+
+static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+    std::cout << "Executing 'duckmail_fetch' table function..." << std::endl; // Debugging
+
+    auto &bind_data = (DuckMailBindData &)*data.bind_data;
+    auto emails = FetchEmails(bind_data.token);
+
     idx_t row_count = MinValue<idx_t>(emails.size(), STANDARD_VECTOR_SIZE);
     for (idx_t i = 0; i < row_count; i++) {
         output.SetValue(0, i, Value(emails[i].first));   // Message ID
         output.SetValue(1, i, Value(emails[i].second)); // Snippet
     }
     output.SetCardinality(row_count);
+
+    std::cout << "Returned " << row_count << " rows from Gmail API." << std::endl; // Debugging
 }
 
-// Register the table function
 void DuckMailFetchFunction::Register(DatabaseInstance &instance) {
-    TableFunction fetch_func("duckmail_fetch", {}, DuckMailTableFunction);
-    fetch_func.named_parameters["limit"] = LogicalType::INTEGER;
-    fetch_func.return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
-    fetch_func.names = {"message_id", "snippet"};
+    std::cout << "Registering 'duckmail_fetch' function..." << std::endl; // Debugging
+    TableFunction fetch_func("duckmail_fetch", {}, DuckMailTableFunction, DuckMailBind);
     ExtensionUtil::RegisterFunction(instance, fetch_func);
 }
 

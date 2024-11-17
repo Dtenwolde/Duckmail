@@ -67,27 +67,34 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
 
     try {
         auto parsed_json = json::parse(response);
-
         std::map<std::string, std::string> details;
         details["id"] = message_id;
 
-        // Extract headers like "From", "To", "Subject"
         if (parsed_json.contains("payload") && parsed_json["payload"].contains("headers")) {
             for (const auto &header : parsed_json["payload"]["headers"]) {
                 std::string name = header.value("name", "");
                 std::string value = header.value("value", "");
-                if (!name.empty()) {
+                if (name == "From" || name == "To") {
+                    // Split into name and email
+                    size_t start = value.find('<');
+                    size_t end = value.find('>');
+                    if (start != std::string::npos && end != std::string::npos && end > start) {
+                        details[name + "_email"] = value.substr(start + 1, end - start - 1);
+                        details[name + "_name"] = value.substr(0, start - 1); // Exclude trailing space
+                    } else {
+                        details[name + "_email"] = value;
+                        details[name + "_name"] = ""; // No name available
+                    }
+                } else if (!name.empty()) {
                     details[name] = value;
                 }
             }
         }
 
-        // Extract snippet
         if (parsed_json.contains("snippet")) {
             details["snippet"] = parsed_json.value("snippet", "");
         }
 
-        // Extract labels
         if (parsed_json.contains("labelIds") && parsed_json["labelIds"].is_array()) {
             std::string labels = "";
             for (const auto &label : parsed_json["labelIds"]) {
@@ -99,7 +106,6 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
             }
         }
 
-        // Extract attachment info (if any)
         if (parsed_json.contains("payload") && parsed_json["payload"].contains("parts")) {
             for (const auto &part : parsed_json["payload"]["parts"]) {
                 if (part.contains("filename") && !part["filename"].get<std::string>().empty()) {
@@ -189,21 +195,25 @@ unique_ptr<FunctionData> DuckMailBind(ClientContext &context, TableFunctionBindI
 
     std::string token = token_value.ToString();
 
-    // Parse optional limit parameter
-    int64_t limit = -1; // Default: fetch all emails
+    int64_t limit = -1;
     if (input.named_parameters.find("mail_limit") != input.named_parameters.end()) {
         limit = input.named_parameters.at("mail_limit").GetValue<int64_t>();
     }
 
-    // Set output schema
     return_types.emplace_back(LogicalType::VARCHAR); // Message ID
     names.emplace_back("message_id");
 
-    return_types.emplace_back(LogicalType::VARCHAR); // Sender
-    names.emplace_back("from");
+    return_types.emplace_back(LogicalType::VARCHAR); // Sender Name
+    names.emplace_back("sender_name");
 
-    return_types.emplace_back(LogicalType::VARCHAR); // Recipients
-    names.emplace_back("to");
+    return_types.emplace_back(LogicalType::VARCHAR); // Sender Email
+    names.emplace_back("sender_email");
+
+    return_types.emplace_back(LogicalType::VARCHAR); // Recipient Name
+    names.emplace_back("recipient_name");
+
+    return_types.emplace_back(LogicalType::VARCHAR); // Recipient Email
+    names.emplace_back("recipient_email");
 
     return_types.emplace_back(LogicalType::VARCHAR); // Snippet
     names.emplace_back("snippet");
@@ -228,41 +238,37 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
     auto &bind_data = (DuckMailBindData &)*data.bind_data;
     auto &global_state = data.global_state->Cast<DuckMailGlobalState>();
 
-    // Exit early if done
     if (global_state.done) {
         output.SetCardinality(0);
         return;
     }
 
-    // Fetch emails if not already fetched
     if (global_state.emails.empty()) {
         global_state.emails = FetchEmails(bind_data.token, bind_data.limit);
     }
 
-    // Calculate remaining rows to fetch
     idx_t remaining_rows = global_state.emails.size() - global_state.current_idx;
     idx_t row_count = MinValue<idx_t>(remaining_rows, STANDARD_VECTOR_SIZE);
 
-    // Populate output chunk
     for (idx_t i = 0; i < row_count; i++) {
         const auto &email = global_state.emails[global_state.current_idx + i];
 
-        // Safely fetch keys
         auto GetValueOrDefault = [](const std::map<std::string, std::string> &map, const std::string &key) -> std::string {
             auto it = map.find(key);
             return it != map.end() ? it->second : "";
         };
 
-        output.SetValue(0, i, Value(GetValueOrDefault(email, "id")));          // Message ID
-        output.SetValue(1, i, Value(GetValueOrDefault(email, "From")));       // Sender
-        output.SetValue(2, i, Value(GetValueOrDefault(email, "To")));         // Recipients
-        output.SetValue(3, i, Value(GetValueOrDefault(email, "snippet")));    // Snippet
-        output.SetValue(4, i, Value(GetValueOrDefault(email, "Subject")));    // Subject
-        output.SetValue(5, i, Value(GetValueOrDefault(email, "labels")));     // Labels
-        output.SetValue(6, i, Value(GetValueOrDefault(email, "attachments"))); // Attachments
+        output.SetValue(0, i, Value(GetValueOrDefault(email, "id")));             // Message ID
+        output.SetValue(1, i, Value(GetValueOrDefault(email, "From_name")));     // Sender Name
+        output.SetValue(2, i, Value(GetValueOrDefault(email, "From_email")));    // Sender Email
+        output.SetValue(3, i, Value(GetValueOrDefault(email, "To_name")));       // Recipient Name
+        output.SetValue(4, i, Value(GetValueOrDefault(email, "To_email")));      // Recipient Email
+        output.SetValue(5, i, Value(GetValueOrDefault(email, "snippet")));       // Snippet
+        output.SetValue(6, i, Value(GetValueOrDefault(email, "Subject")));       // Subject
+        output.SetValue(7, i, Value(GetValueOrDefault(email, "labels")));        // Labels
+        output.SetValue(8, i, Value(GetValueOrDefault(email, "attachments")));   // Attachments
     }
 
-    // Update the current index and check if we’ve hit the limit
     global_state.current_idx += row_count;
     if (global_state.current_idx >= global_state.emails.size() || global_state.current_idx >= static_cast<idx_t>(bind_data.limit)) {
         global_state.done = true;
@@ -270,6 +276,7 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
 
     output.SetCardinality(row_count);
 }
+
 void DuckMailFetchFunction::Register(DatabaseInstance &instance) {
     TableFunction fetch_func("duckmail_fetch", {}, DuckMailTableFunction, DuckMailBind, DuckMailInitGlobal);
     fetch_func.named_parameters["mail_limit"] = LogicalType::BIGINT; // Optional parameter

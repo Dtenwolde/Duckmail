@@ -20,7 +20,8 @@ include_directories(third_party)
 set(EXTENSION_SOURCES
     src/duckmail_extension.cpp
     src/duckmail_auth.cpp
-    src/duckmail_fetch.cpp)
+    src/duckmail_fetch.cpp
+    src/pragma_inbox.cpp)
 
 # Build static and loadable extensions
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

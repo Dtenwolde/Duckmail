@@ -14,6 +14,7 @@
 #include <openssl/opensslv.h>
 #include <curl/curl.h>
 #include <duckmail_fetch.hpp>
+#include <pragma_inbox.hpp>
 
 namespace duckdb {
 
@@ -48,6 +49,7 @@ static void LoadInternal(DatabaseInstance &instance) {
     ExtensionUtil::RegisterFunction(instance, duckmail_openssl_version_scalar_function);
 		CreateDuckMailSecretFunctions::Register(instance);
 		DuckMailFetchFunction::Register(instance);
+		DuckMailPragmaCreateInbox::Register(instance);
 }
 
 void DuckmailExtension::Load(DuckDB &db) {

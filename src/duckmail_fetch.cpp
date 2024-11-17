@@ -8,6 +8,9 @@
 #include <duckdb/main/extension_util.hpp>
 #include <json.hpp>
 #include <iostream>
+#include <thread>
+#include <future>
+#include <mutex>
 
 namespace duckdb {
 
@@ -124,27 +127,140 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
     }
 }
 
-    std::vector<std::map<std::string, std::string>> FetchEmails(const std::string &token, int64_t limit, const std::string &label) {
+int64_t FetchTotalEmailCount(const std::string &token) {
+    const std::string api_url = "https://www.googleapis.com/gmail/v1/users/me/profile";
+    std::string response = SendGetRequest(api_url, token);
+
+    try {
+        auto parsed_json = json::parse(response);
+
+        if (parsed_json.contains("messagesTotal")) {
+            return parsed_json["messagesTotal"].get<int64_t>();
+        } else {
+            throw std::runtime_error("Response does not contain 'messagesTotal'.");
+        }
+    } catch (const json::exception &e) {
+        std::cerr << "JSON parsing error: " << e.what() << std::endl;
+        throw std::runtime_error("Failed to retrieve total email count.");
+    }
+}
+
+
+#include <atomic>
+#include <condition_variable>
+
+// Progress tracking variables
+std::atomic<int64_t> total_fetched(0);  // Total emails fetched so far
+std::mutex progress_mutex;
+std::condition_variable progress_cv;
+
+// Helper function to report progress periodically
+void ProgressReporter(int64_t total_emails, int64_t batch_size) {
+    int64_t last_reported = 0;
+    while (true) {
+        std::unique_lock<std::mutex> lock(progress_mutex);
+        progress_cv.wait(lock, [&]() { return total_fetched > last_reported || total_fetched == total_emails; });
+
+        if (total_fetched == total_emails) {
+            std::cout << "Finished fetching all " << total_emails << " emails." << std::endl;
+            break;
+        }
+
+        if (total_fetched >= last_reported + batch_size) {
+            last_reported = total_fetched;
+            std::cout << "Fetched " << total_fetched << " / " << total_emails << " emails so far." << std::endl;
+        }
+    }
+}
+
+std::vector<std::map<std::string, std::string>> FetchEmails(const std::string &token, int64_t limit, const std::string &label) {
+    const int max_threads = std::thread::hardware_concurrency(); // Use available CPU cores
     std::string api_url = "https://www.googleapis.com/gmail/v1/users/me/messages";
     std::string query_params = "?";
     if (!label.empty()) {
         query_params += "q=label:" + label + "&";
     }
-    if (limit > 0) {
-        query_params += "maxResults=" + std::to_string(limit);
-    }
 
-    std::string response = SendGetRequest(api_url + query_params, token);
-    std::vector<std::string> message_ids = ParseGmailResponse(response);
+    // If no limit is specified, fetch the total number of emails
+    int64_t total_emails = -1;
+    if (limit <= 0) {
+        total_emails = FetchTotalEmailCount(token);
+        std::cout << "Total emails in the account: " << total_emails << std::endl;
+    }
 
     std::vector<std::map<std::string, std::string>> email_details;
-    for (const auto &id : message_ids) {
-        auto details = FetchMessageDetails(id, token).second; // Fetch detailed information
-        email_details.push_back(details);
-        if (email_details.size() >= static_cast<size_t>(limit)) {
-            break;
+    std::vector<std::string> message_ids;
+    std::string next_page_token;
+
+    // Fetch all message IDs first
+    while (true) {
+        std::string current_url = api_url + query_params;
+        if (!next_page_token.empty()) {
+            current_url += "&pageToken=" + next_page_token;
+        }
+
+        // Add maxResults for page fetching
+        current_url += "&maxResults=100";
+
+        std::string response = SendGetRequest(current_url, token);
+        auto parsed_json = json::parse(response);
+
+        // Parse message IDs
+        auto fetched_ids = ParseGmailResponse(response);
+        message_ids.insert(message_ids.end(), fetched_ids.begin(), fetched_ids.end());
+
+        if (parsed_json.contains("nextPageToken")) {
+            next_page_token = parsed_json["nextPageToken"].get<std::string>();
+        } else {
+            break; // No more pages
+        }
+
+        if (limit > 0 && message_ids.size() >= static_cast<size_t>(limit)) {
+            break; // Stop fetching IDs if we've hit the limit
         }
     }
+
+    // Trim message IDs to the specified limit
+    if (limit > 0 && message_ids.size() > static_cast<size_t>(limit)) {
+        message_ids.resize(limit);
+    }
+
+    // Multithreaded fetching of email details
+    std::vector<std::future<void>> futures;
+    std::mutex email_mutex;
+    int64_t batch_size = 50; // Number of emails per progress report
+
+    // Launch a separate thread for progress reporting
+    std::thread progress_thread(ProgressReporter, message_ids.size(), batch_size);
+
+    size_t chunk_size = (message_ids.size() + max_threads - 1) / max_threads;
+    for (size_t i = 0; i < message_ids.size(); i += chunk_size) {
+        std::vector<std::string> chunk(message_ids.begin() + i,
+                                       message_ids.begin() + std::min(i + chunk_size, message_ids.size()));
+
+        futures.emplace_back(std::async(std::launch::async, [chunk, &token, &email_details, &email_mutex]() {
+            std::vector<std::map<std::string, std::string>> chunk_details;
+            for (const auto &id : chunk) {
+                chunk_details.push_back(FetchMessageDetails(id, token).second);
+                total_fetched++;
+                progress_cv.notify_one(); // Notify the progress reporter
+            }
+            std::lock_guard<std::mutex> lock(email_mutex);
+            email_details.insert(email_details.end(), chunk_details.begin(), chunk_details.end());
+        }));
+    }
+
+    // Wait for all threads to complete
+    for (auto &future : futures) {
+        future.get();
+    }
+
+    // Notify the progress thread that all emails are fetched
+    total_fetched = message_ids.size();
+    progress_cv.notify_one();
+    progress_thread.join();
+
+    std::cout << "Finished fetching " << email_details.size() << " emails." << std::endl;
     return email_details;
 }
 

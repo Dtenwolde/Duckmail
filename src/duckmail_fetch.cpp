@@ -124,13 +124,17 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
     }
 }
 
-std::vector<std::map<std::string, std::string>> FetchEmails(const std::string &token, int64_t limit) {
+    std::vector<std::map<std::string, std::string>> FetchEmails(const std::string &token, int64_t limit, const std::string &label) {
     std::string api_url = "https://www.googleapis.com/gmail/v1/users/me/messages";
+    std::string query_params = "?";
+    if (!label.empty()) {
+        query_params += "q=label:" + label + "&";
+    }
     if (limit > 0) {
-        api_url += "?maxResults=" + std::to_string(limit);
+        query_params += "maxResults=" + std::to_string(limit);
     }
 
-    std::string response = SendGetRequest(api_url, token);
+    std::string response = SendGetRequest(api_url + query_params, token);
     std::vector<std::string> message_ids = ParseGmailResponse(response);
 
     std::vector<std::map<std::string, std::string>> email_details;
@@ -155,16 +159,18 @@ struct DuckMailGlobalState : public GlobalTableFunctionState {
 struct DuckMailBindData : public FunctionData {
     std::string token;
     int64_t limit;
+    std::string label;
 
-    explicit DuckMailBindData(std::string token_p, int64_t limit_p)
-        : token(std::move(token_p)), limit(limit_p) {}
+    explicit DuckMailBindData(std::string token_p, int64_t limit_p, std::string label_p)
+        : token(std::move(token_p)), limit(limit_p), label(std::move(label_p)) {}
 
     unique_ptr<FunctionData> Copy() const override {
-        return make_uniq<DuckMailBindData>(token, limit);
+        return make_uniq<DuckMailBindData>(token, limit, label);
     }
+
     bool Equals(const FunctionData &other) const override {
         auto &other_data = (const DuckMailBindData &)other;
-        return token == other_data.token && limit == other_data.limit;
+        return token == other_data.token && limit == other_data.limit && label == other_data.label;
     }
 };
 
@@ -195,11 +201,19 @@ unique_ptr<FunctionData> DuckMailBind(ClientContext &context, TableFunctionBindI
 
     std::string token = token_value.ToString();
 
+    // Parse optional limit parameter
     int64_t limit = -1;
     if (input.named_parameters.find("mail_limit") != input.named_parameters.end()) {
         limit = input.named_parameters.at("mail_limit").GetValue<int64_t>();
     }
 
+    // Parse optional label parameter
+    std::string label = ""; // Default to fetching all emails if no label is provided
+    if (input.named_parameters.find("mail_label") != input.named_parameters.end()) {
+        label = input.named_parameters.at("mail_label").GetValue<std::string>();
+    }
+
+    // Set output schema
     return_types.emplace_back(LogicalType::VARCHAR); // Message ID
     names.emplace_back("message_id");
 
@@ -227,7 +241,7 @@ unique_ptr<FunctionData> DuckMailBind(ClientContext &context, TableFunctionBindI
     return_types.emplace_back(LogicalType::VARCHAR); // Attachments
     names.emplace_back("attachments");
 
-    return make_uniq<DuckMailBindData>(token, limit);
+    return make_uniq<DuckMailBindData>(token, limit, label);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckMailInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
@@ -238,21 +252,26 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
     auto &bind_data = (DuckMailBindData &)*data.bind_data;
     auto &global_state = data.global_state->Cast<DuckMailGlobalState>();
 
+    // Exit early if done
     if (global_state.done) {
         output.SetCardinality(0);
         return;
     }
 
+    // Fetch emails if not already fetched
     if (global_state.emails.empty()) {
-        global_state.emails = FetchEmails(bind_data.token, bind_data.limit);
+        global_state.emails = FetchEmails(bind_data.token, bind_data.limit, bind_data.label); // Pass label filter
     }
 
+    // Calculate remaining rows to fetch
     idx_t remaining_rows = global_state.emails.size() - global_state.current_idx;
     idx_t row_count = MinValue<idx_t>(remaining_rows, STANDARD_VECTOR_SIZE);
 
+    // Populate output chunk
     for (idx_t i = 0; i < row_count; i++) {
         const auto &email = global_state.emails[global_state.current_idx + i];
 
+        // Utility function to safely extract values from the map
         auto GetValueOrDefault = [](const std::map<std::string, std::string> &map, const std::string &key) -> std::string {
             auto it = map.find(key);
             return it != map.end() ? it->second : "";
@@ -269,6 +288,7 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
         output.SetValue(8, i, Value(GetValueOrDefault(email, "attachments")));   // Attachments
     }
 
+    // Update state and check if done
     global_state.current_idx += row_count;
     if (global_state.current_idx >= global_state.emails.size() || global_state.current_idx >= static_cast<idx_t>(bind_data.limit)) {
         global_state.done = true;
@@ -279,7 +299,12 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
 
 void DuckMailFetchFunction::Register(DatabaseInstance &instance) {
     TableFunction fetch_func("duckmail_fetch", {}, DuckMailTableFunction, DuckMailBind, DuckMailInitGlobal);
-    fetch_func.named_parameters["mail_limit"] = LogicalType::BIGINT; // Optional parameter
+
+    // Add optional named parameters
+    fetch_func.named_parameters["mail_limit"] = LogicalType::BIGINT; // Limit the number of emails
+    fetch_func.named_parameters["mail_label"] = LogicalType::VARCHAR; // Filter by label (optional)
+
+    // Register the function
     ExtensionUtil::RegisterFunction(instance, fetch_func);
 }
 

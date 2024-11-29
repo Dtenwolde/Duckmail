@@ -11,7 +11,7 @@ namespace duckdb {
 		static std::string InitiateOAuthFlow();
 
 		//! Register all CreateSecretFunctions
-		static void Register(DatabaseInstance &instance);
+		static void RegisterGmail(DatabaseInstance &instance);
 	};
 
 } // namespace duckdb

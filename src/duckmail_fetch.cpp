@@ -294,25 +294,25 @@ unique_ptr<FunctionData> DuckMailBind(ClientContext &context, TableFunctionBindI
                                       vector<LogicalType> &return_types, vector<string> &names) {
     auto &secret_manager = SecretManager::Get(context);
     auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-    auto secret_match = secret_manager.LookupSecret(transaction, "duckmail", "duckmail");
+    auto secret_match = secret_manager.LookupSecret(transaction, "duckmail", "gmail");
 
     if (!secret_match.HasMatch()) {
-        throw InvalidInputException("No 'duckmail' secret found. Please create a secret with 'CREATE SECRET' first.");
+        throw InvalidInputException("No 'gmail' secret found. Please create a secret with 'CREATE SECRET' first.");
     }
 
     auto &secret = secret_match.GetSecret();
-    if (secret.GetType() != "duckmail") {
-        throw InvalidInputException("Invalid secret type. Expected 'duckmail', got '%s'", secret.GetType());
+    if (secret.GetType() != "gmail") {
+        throw InvalidInputException("Invalid secret type. Expected 'gmail', got '%s'", secret.GetType());
     }
 
     const auto *kv_secret = dynamic_cast<const KeyValueSecret *>(&secret);
     if (!kv_secret) {
-        throw InvalidInputException("Invalid secret format for 'duckmail' secret.");
+        throw InvalidInputException("Invalid secret format for 'gmail' secret.");
     }
 
     Value token_value;
     if (!kv_secret->TryGetValue("token", token_value)) {
-        throw InvalidInputException("'token' not found in 'duckmail' secret.");
+        throw InvalidInputException("'token' not found in 'gmail' secret.");
     }
 
     std::string token = token_value.ToString();

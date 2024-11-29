@@ -60,14 +60,6 @@ std::string CreateDuckMailSecretFunctions::InitiateOAuthFlow() {
     return access_token;
 }
 
-// Helper function to copy secret parameters
-static void CopySecretParameter(const std::string &key, const CreateSecretInput &input, KeyValueSecret &result) {
-    auto it = input.options.find(key);
-    if (it != input.options.end()) {
-        result.secret_map[key] = it->second;
-    }
-}
-
 // Function to redact sensitive keys
 static void RedactSensitiveKeys(KeyValueSecret &result) {
     result.redact_keys.insert("token");
@@ -92,8 +84,8 @@ static unique_ptr<BaseSecret> CreateDuckMailSecretFromOAuth(ClientContext &conte
 }
 
 // Register the secret type and provider functions
-void CreateDuckMailSecretFunctions::Register(DatabaseInstance &instance) {
-    const std::string type = "duckmail";
+void CreateDuckMailSecretFunctions::RegisterGmail(DatabaseInstance &instance) {
+    const string type = "gmail";
 
     // Register the new secret type
     SecretType secret_type;

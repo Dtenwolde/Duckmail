@@ -39,15 +39,7 @@ inline void DuckmailOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
 }
 
 static void LoadInternal(DatabaseInstance &instance) {
-    // Register a scalar function
-    auto duckmail_scalar_function = ScalarFunction("duckmail", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckmailScalarFun);
-    ExtensionUtil::RegisterFunction(instance, duckmail_scalar_function);
-
-    // Register another scalar function
-    auto duckmail_openssl_version_scalar_function = ScalarFunction("duckmail_openssl_version", {LogicalType::VARCHAR},
-                                                LogicalType::VARCHAR, DuckmailOpenSSLVersionScalarFun);
-    ExtensionUtil::RegisterFunction(instance, duckmail_openssl_version_scalar_function);
-		CreateDuckMailSecretFunctions::Register(instance);
+		CreateDuckMailSecretFunctions::RegisterGmail(instance);
 		DuckMailFetchFunction::Register(instance);
 		DuckMailPragmaCreateInbox::Register(instance);
 }

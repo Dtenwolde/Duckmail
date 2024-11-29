@@ -22,6 +22,7 @@ set(EXTENSION_SOURCES
     src/duckmail_auth.cpp
     src/duckmail_imap_auth.cpp
     src/duckmail_fetch.cpp
+    src/duckmail_imap_fetch.cpp
     src/pragma_inbox.cpp)
 
 # Build static and loadable extensions

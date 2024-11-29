@@ -43,6 +43,7 @@ static void LoadInternal(DatabaseInstance &instance) {
 		CreateDuckMailSecretFunctions::RegisterImap(instance);
 		DuckMailFetchFunction::Register(instance);
 		DuckMailPragmaCreateInbox::Register(instance);
+		IMAPFetchFunction::Register(instance);
 }
 
 void DuckmailExtension::Load(DuckDB &db) {

@@ -10,4 +10,9 @@ namespace duckdb {
 		static void Register(DatabaseInstance &instance);
 	};
 
+	class IMAPFetchFunction {
+	public:
+		static void Register(DatabaseInstance &instance);
+	};
+
 } // namespace duckdb

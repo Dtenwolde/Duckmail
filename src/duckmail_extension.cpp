@@ -40,6 +40,7 @@ inline void DuckmailOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
 
 static void LoadInternal(DatabaseInstance &instance) {
 		CreateDuckMailSecretFunctions::RegisterGmail(instance);
+		CreateDuckMailSecretFunctions::RegisterImap(instance);
 		DuckMailFetchFunction::Register(instance);
 		DuckMailPragmaCreateInbox::Register(instance);
 }

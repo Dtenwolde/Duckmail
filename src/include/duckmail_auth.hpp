@@ -12,6 +12,7 @@ namespace duckdb {
 
 		//! Register all CreateSecretFunctions
 		static void RegisterGmail(DatabaseInstance &instance);
+		static void RegisterImap(DatabaseInstance &instance);
 	};
 
 } // namespace duckdb

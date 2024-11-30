@@ -21,7 +21,6 @@
 
 
 namespace duckdb {
-
 #include <netdb.h>
 #include <cstring> // for std::memset
 
@@ -31,7 +30,7 @@ namespace duckdb {
 
         // Set hints for getaddrinfo
         std::memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;    // Allow IPv4 or IPv6
+        hints.ai_family = AF_UNSPEC; // Allow IPv4 or IPv6
         hints.ai_socktype = SOCK_STREAM; // TCP stream sockets
 
         std::string port_str = std::to_string(port);
@@ -67,54 +66,55 @@ namespace duckdb {
 
         return sockfd;
     }
-// Helper function to initialize an SSL context
-static SSL_CTX *InitializeSSLContext() {
-    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) {
-        throw IOException("Failed to create SSL context.");
+
+    // Helper function to initialize an SSL context
+    static SSL_CTX *InitializeSSLContext() {
+        SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+        if (!ctx) {
+            throw IOException("Failed to create SSL context.");
+        }
+        return ctx;
     }
-    return ctx;
-}
 
     static SSL *ConnectToIMAPServer(const std::string &host, int port) {
-    SSL_CTX *ctx = InitializeSSLContext();
-    SSL *ssl = nullptr;
-    int sockfd = -1;
+        SSL_CTX *ctx = InitializeSSLContext();
+        SSL *ssl = nullptr;
+        int sockfd = -1;
 
-    try {
-        // Resolve the hostname and connect to the server
-        sockfd = ResolveAndConnect(host, port);
+        try {
+            // Resolve the hostname and connect to the server
+            sockfd = ResolveAndConnect(host, port);
 
-        // Create the SSL object
-        ssl = SSL_new(ctx);
-        if (!ssl) {
-            close(sockfd);
-            throw IOException("Failed to create SSL object.");
+            // Create the SSL object
+            ssl = SSL_new(ctx);
+            if (!ssl) {
+                close(sockfd);
+                throw IOException("Failed to create SSL object.");
+            }
+
+            SSL_set_fd(ssl, sockfd);
+
+            // Establish SSL connection
+            if (SSL_connect(ssl) <= 0) {
+                close(sockfd);
+                SSL_free(ssl);
+                throw IOException("Failed to establish SSL connection.");
+            }
+
+            std::cout << "Connected to IMAP server " << host << " on port " << port << "\n";
+            return ssl;
+        } catch (...) {
+            if (sockfd >= 0) {
+                close(sockfd);
+            }
+            if (ssl) {
+                SSL_free(ssl);
+            }
+            SSL_CTX_free(ctx);
+            throw;
         }
-
-        SSL_set_fd(ssl, sockfd);
-
-        // Establish SSL connection
-        if (SSL_connect(ssl) <= 0) {
-            close(sockfd);
-            SSL_free(ssl);
-            throw IOException("Failed to establish SSL connection.");
-        }
-
-        std::cout << "Connected to IMAP server " << host << " on port " << port << "\n";
-        return ssl;
-
-    } catch (...) {
-        if (sockfd >= 0) {
-            close(sockfd);
-        }
-        if (ssl) {
-            SSL_free(ssl);
-        }
-        SSL_CTX_free(ctx);
-        throw;
     }
-}
+
     static int command_counter = 1;
 
     static std::string SendIMAPCommand(SSL *ssl, const std::string &command) {
@@ -157,257 +157,259 @@ static SSL_CTX *InitializeSSLContext() {
         return response;
     }
 
-static void CloseSSLConnection(SSL *ssl, int sockfd) {
-    if (ssl) {
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-    }
-    if (sockfd >= 0) {
-        close(sockfd);
-    }
-}
-
-// Parse UIDs from IMAP response
-static std::vector<std::string> ParseUIDSearchResponse(const std::string &response) {
-    std::vector<std::string> uids;
-    std::istringstream stream(response);
-    std::string line;
-
-    while (std::getline(stream, line)) {
-        if (line.find("* SEARCH") != std::string::npos) {
-            std::istringstream uid_stream(line.substr(line.find("SEARCH") + 7));
-            std::string uid;
-            while (uid_stream >> uid) {
-                uids.push_back(uid);
-            }
+    static void CloseSSLConnection(SSL *ssl, int sockfd) {
+        if (ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+        }
+        if (sockfd >= 0) {
+            close(sockfd);
         }
     }
-    return uids;
-}
 
-// Fetch valid UIDs from mailbox
-static std::vector<std::string> FetchValidUIDs(SSL *ssl) {
-    std::vector<std::string> uids;
+    // Parse UIDs from IMAP response
+    static std::vector<std::string> ParseUIDSearchResponse(const std::string &response) {
+        std::vector<std::string> uids;
+        std::istringstream stream(response);
+        std::string line;
 
-    // SELECT INBOX
-    std::cout << "Sending IMAP command: SELECT INBOX\n";
-    std::string select_response = SendIMAPCommand(ssl, "SELECT INBOX");
-    if (select_response.find("OK") == std::string::npos) {
-        throw IOException("SELECT INBOX failed. Response: " + select_response);
-    }
-
-    // UID SEARCH ALL
-    std::cout << "Sending IMAP command: UID SEARCH ALL\n";
-    std::string search_response = SendIMAPCommand(ssl, "UID SEARCH ALL");
-    if (search_response.find("OK") == std::string::npos) {
-        throw IOException("UID SEARCH ALL failed. Response: " + search_response);
-    }
-
-    uids = ParseUIDSearchResponse(search_response);
-    if (uids.empty()) {
-        std::cerr << "No valid UIDs found in mailbox.\n";
-    } else {
-        std::cout << "Valid UIDs found: ";
-        for (const auto &uid : uids) {
-            std::cout << uid << " ";
-        }
-        std::cout << "\n";
-    }
-
-    return uids;
-}
-
-// Helper function to trim trailing whitespace or \r
-static std::string Trim(const std::string &str) {
-    size_t end = str.find_last_not_of("\r\n \t");
-    return (end == std::string::npos) ? "" : str.substr(0, end + 1);
-}
-
-// Helper function to Base64-decode a string
-static std::string Base64Decode(const std::string &input) {
-    BIO *bio, *b64;
-    char buffer[1024];
-    memset(buffer, 0, sizeof(buffer));
-
-    // Setup Base64 decoding
-    bio = BIO_new_mem_buf(input.data(), input.size());
-    b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); // Do not require newlines
-
-    int decoded_size = BIO_read(bio, buffer, sizeof(buffer) - 1);
-    BIO_free_all(bio);
-
-    if (decoded_size < 0) {
-        throw std::runtime_error("Base64 decoding failed.");
-    }
-
-    return std::string(buffer, decoded_size);
-}
-
-// Decode all MIME encoded-word segments in a string
-static std::string DecodeMIMEMixedText(const std::string &input) {
-    static const std::regex mime_regex(R"(\=\?([^?]+)\?([BQ])\?([^?]+)\?\=)", std::regex::icase);
-    std::string result;
-    std::sregex_iterator begin(input.begin(), input.end(), mime_regex), end;
-
-    size_t last_pos = 0;
-    for (auto it = begin; it != end; ++it) {
-        const auto &match = *it;
-
-        // Append plain text preceding the encoded word
-        result += input.substr(last_pos, match.position() - last_pos);
-
-        // Decode the MIME encoded-word
-        std::string charset = match[1].str();
-        std::string encoding = match[2].str();
-        std::string encoded_text = match[3].str();
-
-        if (encoding == "B" || encoding == "b") {
-            result += Base64Decode(encoded_text);
-        } else if (encoding == "Q" || encoding == "q") {
-            // Decode quoted-printable
-            std::string decoded;
-            for (size_t i = 0; i < encoded_text.size(); ++i) {
-                if (encoded_text[i] == '_') {
-                    decoded += ' '; // '_' maps to space
-                } else if (encoded_text[i] == '=' && i + 2 < encoded_text.size()) {
-                    char hex[3] = {encoded_text[i + 1], encoded_text[i + 2], 0};
-                    decoded += static_cast<char>(std::strtol(hex, nullptr, 16));
-                    i += 2;
-                } else {
-                    decoded += encoded_text[i];
+        while (std::getline(stream, line)) {
+            if (line.find("* SEARCH") != std::string::npos) {
+                std::istringstream uid_stream(line.substr(line.find("SEARCH") + 7));
+                std::string uid;
+                while (uid_stream >> uid) {
+                    uids.push_back(uid);
                 }
             }
-            result += decoded;
+        }
+        return uids;
+    }
+
+    // Fetch valid UIDs from mailbox
+    static std::vector<std::string> FetchValidUIDs(SSL *ssl) {
+        std::vector<std::string> uids;
+
+        // SELECT INBOX
+        std::cout << "Sending IMAP command: SELECT INBOX\n";
+        std::string select_response = SendIMAPCommand(ssl, "SELECT INBOX");
+        if (select_response.find("OK") == std::string::npos) {
+            throw IOException("SELECT INBOX failed. Response: " + select_response);
         }
 
-        // Update last position
-        last_pos = match.position() + match.length();
-    }
-
-    // Append remaining plain text after the last encoded word
-    result += input.substr(last_pos);
-
-    return result;
-}
-
-// Updated function to parse "From" field
-static std::pair<std::string, std::string> ParseFromField(const std::string &from) {
-    std::string name, email;
-
-    size_t start_angle = from.find('<');
-    size_t end_angle = from.find('>');
-
-    if (start_angle != std::string::npos && end_angle != std::string::npos && start_angle < end_angle) {
-        email = from.substr(start_angle + 1, end_angle - start_angle - 1);
-        name = from.substr(0, start_angle);
-    } else {
-        // If no angle brackets, treat the entire field as the email
-        email = from;
-    }
-
-    // Trim and decode both name and email
-    name = Trim(name);
-    email = Trim(email);
-
-    // Decode MIME encoded names
-    name = DecodeMIMEMixedText(name);
-
-    return {name, email};
-}
-// Fetch email details for a given UID
-static std::map<std::string, std::string> FetchIMAPMessageDetails(SSL *ssl, const std::string &uid) {
-    std::string fetch_command = "UID FETCH " + uid + " (BODY[HEADER])";
-    std::string response = SendIMAPCommand(ssl, fetch_command);
-
-    std::map<std::string, std::string> details;
-    details["id"] = uid;
-
-    std::istringstream stream(response);
-    std::string line;
-    std::string from_field;
-
-    while (std::getline(stream, line)) {
-        if (line.find("Subject:") == 0) {
-            details["subject"] = Trim(line.substr(9)); // Trim the subject
-        } else if (line.find("From:") == 0) {
-            from_field = Trim(line.substr(6)); // Capture the raw "From" field
+        // UID SEARCH ALL
+        std::cout << "Sending IMAP command: UID SEARCH ALL\n";
+        std::string search_response = SendIMAPCommand(ssl, "UID SEARCH ALL");
+        if (search_response.find("OK") == std::string::npos) {
+            throw IOException("UID SEARCH ALL failed. Response: " + search_response);
         }
-    }
 
-    if (details.find("subject") == details.end()) {
-        details["subject"] = "No subject found.";
-    }
-
-    if (!from_field.empty()) {
-        auto [name, email] = ParseFromField(from_field);
-        details["from_name"] = name.empty() ? "Unknown sender" : name;
-        details["from_email"] = email;
-    } else {
-        details["from_name"] = "Unknown sender";
-        details["from_email"] = "No email address found.";
-    }
-
-    return details;
-}
-
-std::vector<std::map<std::string, std::string>> FetchEmails(const std::string &server, int port,
-                                                            const std::string &username, const std::string &password,
-                                                            int64_t limit) {
-    // Establish SSL connection to the IMAP server
-    int sockfd = -1;
-    SSL *ssl = nullptr;
-
-    std::vector<std::map<std::string, std::string>> emails;
-
-    try {
-        ssl = ConnectToIMAPServer(server, port);
-
-        // Authenticate user
-        std::string login_command = "LOGIN " + username + " " + password;
-        std::cout << "Sending IMAP LOGIN command...\n";
-        std::string login_response = SendIMAPCommand(ssl, login_command);
-        if (login_response.find("OK") == std::string::npos) {
-            throw IOException("LOGIN command failed. Response: " + login_response);
-        }
-        std::cout << "Login successful.\n";
-
-        // Fetch UIDs
-        std::cout << "Fetching valid UIDs from mailbox...\n";
-        auto uids = FetchValidUIDs(ssl);
+        uids = ParseUIDSearchResponse(search_response);
         if (uids.empty()) {
-            std::cerr << "No valid UIDs found. Mailbox may be empty or commands failed.\n";
-            return emails;
+            std::cerr << "No valid UIDs found in mailbox.\n";
+        } else {
+            std::cout << "Valid UIDs found: ";
+            for (const auto &uid: uids) {
+                std::cout << uid << " ";
+            }
+            std::cout << "\n";
         }
 
-        // Apply limit
-        if (limit > 0 && uids.size() > static_cast<size_t>(limit)) {
-            std::cout << "Applying limit to the number of UIDs. Limit: " << limit << "\n";
-            uids.resize(limit);
+        return uids;
+    }
+
+    // Helper function to trim trailing whitespace or \r
+    static std::string Trim(const std::string &str) {
+        size_t end = str.find_last_not_of("\r\n \t");
+        return (end == std::string::npos) ? "" : str.substr(0, end + 1);
+    }
+
+    // Helper function to Base64-decode a string
+    static std::string Base64Decode(const std::string &input) {
+        BIO *bio, *b64;
+        char buffer[1024];
+        memset(buffer, 0, sizeof(buffer));
+
+        // Setup Base64 decoding
+        bio = BIO_new_mem_buf(input.data(), input.size());
+        b64 = BIO_new(BIO_f_base64());
+        bio = BIO_push(b64, bio);
+        BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); // Do not require newlines
+
+        int decoded_size = BIO_read(bio, buffer, sizeof(buffer) - 1);
+        BIO_free_all(bio);
+
+        if (decoded_size < 0) {
+            throw std::runtime_error("Base64 decoding failed.");
         }
 
-        // Fetch email details for each UID
-        std::cout << "Fetching details for " << uids.size() << " emails...\n";
-        for (const auto &uid : uids) {
-            try {
-                std::cout << "Fetching details for UID: " << uid << "\n";
-                auto details = FetchIMAPMessageDetails(ssl, uid);
-                emails.push_back(details);
-                std::cout << "Fetched email details for UID: " << uid << "\n";
-            } catch (const std::exception &e) {
-                std::cerr << "Error fetching details for UID " << uid << ": " << e.what() << "\n";
+        return std::string(buffer, decoded_size);
+    }
+
+    // Decode all MIME encoded-word segments in a string
+    static std::string DecodeMIMEMixedText(const std::string &input) {
+        static const std::regex mime_regex(R"(\=\?([^?]+)\?([BQ])\?([^?]+)\?\=)", std::regex::icase);
+        std::string result;
+        std::sregex_iterator begin(input.begin(), input.end(), mime_regex), end;
+
+        size_t last_pos = 0;
+        for (auto it = begin; it != end; ++it) {
+            const auto &match = *it;
+
+            // Append plain text preceding the encoded word
+            result += input.substr(last_pos, match.position() - last_pos);
+
+            // Decode the MIME encoded-word
+            std::string charset = match[1].str();
+            std::string encoding = match[2].str();
+            std::string encoded_text = match[3].str();
+
+            if (encoding == "B" || encoding == "b") {
+                result += Base64Decode(encoded_text);
+            } else if (encoding == "Q" || encoding == "q") {
+                // Decode quoted-printable
+                std::string decoded;
+                for (size_t i = 0; i < encoded_text.size(); ++i) {
+                    if (encoded_text[i] == '_') {
+                        decoded += ' '; // '_' maps to space
+                    } else if (encoded_text[i] == '=' && i + 2 < encoded_text.size()) {
+                        char hex[3] = {encoded_text[i + 1], encoded_text[i + 2], 0};
+                        decoded += static_cast<char>(std::strtol(hex, nullptr, 16));
+                        i += 2;
+                    } else {
+                        decoded += encoded_text[i];
+                    }
+                }
+                result += decoded;
+            }
+
+            // Update last position
+            last_pos = match.position() + match.length();
+        }
+
+        // Append remaining plain text after the last encoded word
+        result += input.substr(last_pos);
+
+        return result;
+    }
+
+    // Updated function to parse "From" field
+    static std::pair<std::string, std::string> ParseFromField(const std::string &from) {
+        std::string name, email;
+
+        size_t start_angle = from.find('<');
+        size_t end_angle = from.find('>');
+
+        if (start_angle != std::string::npos && end_angle != std::string::npos && start_angle < end_angle) {
+            email = from.substr(start_angle + 1, end_angle - start_angle - 1);
+            name = from.substr(0, start_angle);
+        } else {
+            // If no angle brackets, treat the entire field as the email
+            email = from;
+        }
+
+        // Trim and decode both name and email
+        name = Trim(name);
+        email = Trim(email);
+
+        // Decode MIME encoded names
+        name = DecodeMIMEMixedText(name);
+
+        return {name, email};
+    }
+
+    // Fetch email details for a given UID
+    static std::map<std::string, std::string> FetchIMAPMessageDetails(SSL *ssl, const std::string &uid) {
+        std::string fetch_command = "UID FETCH " + uid + " (BODY[HEADER])";
+        std::string response = SendIMAPCommand(ssl, fetch_command);
+
+        std::map<std::string, std::string> details;
+        details["id"] = uid;
+
+        std::istringstream stream(response);
+        std::string line;
+        std::string from_field;
+
+        while (std::getline(stream, line)) {
+            if (line.find("Subject:") == 0) {
+                details["subject"] = Trim(line.substr(9)); // Trim the subject
+            } else if (line.find("From:") == 0) {
+                from_field = Trim(line.substr(6)); // Capture the raw "From" field
             }
         }
 
-    } catch (const std::exception &e) {
-        std::cerr << "Error during email fetching process: " << e.what() << "\n";
+        if (details.find("subject") == details.end()) {
+            details["subject"] = "No subject found.";
+        }
+
+        if (!from_field.empty()) {
+            auto [name, email] = ParseFromField(from_field);
+            details["from_name"] = name.empty() ? "Unknown sender" : name;
+            details["from_email"] = email;
+        } else {
+            details["from_name"] = "Unknown sender";
+            details["from_email"] = "No email address found.";
+        }
+
+        return details;
     }
 
-    // Close the SSL connection and socket
-    CloseSSLConnection(ssl, sockfd);
-    return emails;
-}
+    std::vector<std::map<std::string, std::string> > FetchEmails(const std::string &server, int port,
+                                                                 const std::string &username,
+                                                                 const std::string &password,
+                                                                 int64_t limit) {
+        // Establish SSL connection to the IMAP server
+        int sockfd = -1;
+        SSL *ssl = nullptr;
+
+        std::vector<std::map<std::string, std::string> > emails;
+
+        try {
+            ssl = ConnectToIMAPServer(server, port);
+
+            // Authenticate user
+            std::string login_command = "LOGIN " + username + " " + password;
+            std::cout << "Sending IMAP LOGIN command...\n";
+            std::string login_response = SendIMAPCommand(ssl, login_command);
+            if (login_response.find("OK") == std::string::npos) {
+                throw IOException("LOGIN command failed. Response: " + login_response);
+            }
+            std::cout << "Login successful.\n";
+
+            // Fetch UIDs
+            std::cout << "Fetching valid UIDs from mailbox...\n";
+            auto uids = FetchValidUIDs(ssl);
+            if (uids.empty()) {
+                std::cerr << "No valid UIDs found. Mailbox may be empty or commands failed.\n";
+                return emails;
+            }
+
+            // Apply limit
+            if (limit > 0 && uids.size() > static_cast<size_t>(limit)) {
+                std::cout << "Applying limit to the number of UIDs. Limit: " << limit << "\n";
+                uids.resize(limit);
+            }
+
+            // Fetch email details for each UID
+            std::cout << "Fetching details for " << uids.size() << " emails...\n";
+            for (const auto &uid: uids) {
+                try {
+                    std::cout << "Fetching details for UID: " << uid << "\n";
+                    auto details = FetchIMAPMessageDetails(ssl, uid);
+                    emails.push_back(details);
+                    std::cout << "Fetched email details for UID: " << uid << "\n";
+                } catch (const std::exception &e) {
+                    std::cerr << "Error fetching details for UID " << uid << ": " << e.what() << "\n";
+                }
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "Error during email fetching process: " << e.what() << "\n";
+        }
+
+        // Close the SSL connection and socket
+        CloseSSLConnection(ssl, sockfd);
+        return emails;
+    }
+
     struct IMAPGlobalState : public GlobalTableFunctionState {
         std::vector<std::map<std::string, std::string> > emails;
         idx_t current_idx = 0;

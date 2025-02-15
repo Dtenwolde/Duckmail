@@ -10,7 +10,6 @@
 #include <iostream>
 #include <thread>
 #include <future>
-#include <mutex>
 
 namespace duckdb {
 

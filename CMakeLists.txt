@@ -19,9 +19,9 @@ include_directories(third_party)
 
 set(EXTENSION_SOURCES
     src/duckmail_extension.cpp
-    src/duckmail_auth.cpp
     src/duckmail_imap_auth.cpp
-    src/duckmail_fetch.cpp
+    src/duckmail_gmail_auth.cpp
+    src/duckmail_gmail_fetch.cpp
     src/duckmail_imap_fetch.cpp
     src/pragma_inbox.cpp)
 

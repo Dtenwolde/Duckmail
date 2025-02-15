@@ -1,0 +1,23 @@
+# name: test/sql/duckmail.test
+# description: test duckmail extension
+# group: [duckmail]
+
+# Before we load the extension, this will fail
+statement error
+SELECT duckmail('Sam');
+----
+Catalog Error: Scalar Function with name duckmail does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require duckmail
+
+# Confirm the extension works
+query I
+SELECT duckmail('Sam');
+----
+duckmail Sam 🐥
+
+query I
+SELECT duckmail_openssl_version('Michael') ILIKE 'duckmail Michael, my linked OpenSSL version is OpenSSL%';
+----
+true

@@ -88,7 +88,8 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
                         details[name + "_email"] = value;
                         details[name + "_name"] = ""; // No name available
                     }
-                } else if (!name.empty()) {
+                }
+                else if (!name.empty()) {
                     details[name] = value;
                 }
             }
@@ -96,6 +97,10 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
 
         if (parsed_json.contains("snippet")) {
             details["snippet"] = parsed_json.value("snippet", "");
+        }
+
+        if (parsed_json.contains("internalDate")) {
+            details["internalDate"] = parsed_json.value("internalDate", "");
         }
 
         if (parsed_json.contains("labelIds") && parsed_json["labelIds"].is_array()) {
@@ -119,6 +124,10 @@ std::pair<std::string, std::map<std::string, std::string>> FetchMessageDetails(c
                 details["attachments"].pop_back(); // Remove trailing comma
             }
         }
+
+		if (parsed_json.contains("threadId")) {
+			details["threadId"] += parsed_json.value("threadId", "");
+		}
 
         return {message_id, details};
     } catch (const json::exception &e) {
@@ -357,6 +366,12 @@ unique_ptr<FunctionData> DuckMailBind(ClientContext &context, TableFunctionBindI
     return_types.emplace_back(LogicalType::VARCHAR); // Attachments
     names.emplace_back("attachments");
 
+    return_types.emplace_back(LogicalType::VARCHAR); // Attachments
+    names.emplace_back("threadId");
+
+    return_types.emplace_back(LogicalType::BIGINT); // Attachments
+    names.emplace_back("date");
+
     return make_uniq<DuckMailBindData>(token, limit, label);
 }
 
@@ -393,7 +408,7 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
             return it != map.end() ? it->second : "";
         };
 
-        output.SetValue(0, i, Value(GetValueOrDefault(email, "id")));             // Message ID
+        output.SetValue(0, i, Value(GetValueOrDefault(email, "id")));            // Message ID
         output.SetValue(1, i, Value(GetValueOrDefault(email, "From_name")));     // Sender Name
         output.SetValue(2, i, Value(GetValueOrDefault(email, "From_email")));    // Sender Email
         output.SetValue(3, i, Value(GetValueOrDefault(email, "To_name")));       // Recipient Name
@@ -402,6 +417,8 @@ static void DuckMailTableFunction(ClientContext &context, TableFunctionInput &da
         output.SetValue(6, i, Value(GetValueOrDefault(email, "Subject")));       // Subject
         output.SetValue(7, i, Value(GetValueOrDefault(email, "labels")));        // Labels
         output.SetValue(8, i, Value(GetValueOrDefault(email, "attachments")));   // Attachments
+        output.SetValue(9, i, Value(GetValueOrDefault(email, "threadId")));      // Thread ID
+        output.SetValue(10, i, Value(GetValueOrDefault(email, "internalDate")));
     }
 
     // Update state and check if done

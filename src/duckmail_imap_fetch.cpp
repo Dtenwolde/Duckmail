@@ -505,9 +505,6 @@ std::vector<std::map<std::string, std::string>> FetchIMAPMessagesDetails(SSL *ss
         }
     };
 
-
-
-
     unique_ptr<FunctionData> IMAPBind(ClientContext &context, TableFunctionBindInput &input,
                                   vector<LogicalType> &return_types, vector<string> &names) {
     auto &secret_manager = SecretManager::Get(context);
